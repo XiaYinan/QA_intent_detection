@@ -2,7 +2,7 @@ import tensorflow as tf
 import numpy as np
 import random
 import time
-from model_zhihu import Seq2seq
+from model import Seq2seq
 import os
 # from model_seq2seq import Seq2seq
 
@@ -22,11 +22,11 @@ class Config(object):
     target_max_len = 10
 
 
-def load_data(path):
+def load_data(data_num):
     num2en = {"1":"one", "2":"two", "3":"three", "4":"four", "5":"five", "6":"six", "7":"seven", "8":"eight", "9":"nine", "0":"zero"}
     docs_source = []
     docs_target = []
-    for i in range(10000):
+    for i in range(data_num):
         doc_len = random.randint(1,8)
         doc_source = []
         doc_target = []
@@ -92,7 +92,7 @@ def get_batch(docs_source, w2i_source, docs_target, w2i_target, batch_size):
 if __name__ == "__main__":
 
     print("(1)load data......")
-    docs_source, docs_target = load_data("")
+    docs_source, docs_target = load_data(10000)
     w2i_source, i2w_source = make_vocab(docs_source)
     w2i_target, i2w_target = make_vocab(docs_target)
     

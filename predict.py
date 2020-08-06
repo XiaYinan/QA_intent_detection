@@ -2,9 +2,9 @@ import tensorflow as tf
 import numpy as np
 import random
 import time
-from model_seq2seq_contrib import Seq2seq
-from train_seq2seq import load_data, make_vocab, get_batch
-from train_seq2seq import Config
+from model import Seq2seq
+from train import load_data, make_vocab, get_batch
+from train import Config
 # from model_seq2seq import Seq2seq
 
 tf_config = tf.ConfigProto(allow_soft_placement=True)
@@ -14,7 +14,7 @@ model_path = "checkpoint/model.ckpt"
 
 if __name__ == "__main__":
     print("(1)load data......")
-    docs_source, docs_target = load_data("")
+    docs_source, docs_target = load_data(10)
     w2i_source, i2w_source = make_vocab(docs_source)
     w2i_target, i2w_target = make_vocab(docs_target)
     
@@ -49,17 +49,3 @@ if __name__ == "__main__":
             print("out:",[i2w_target[num] for num in predict_batch[i] if i2w_target[num] != "_PAD"])
             print("tar:",[i2w_target[num] for num in target_batch[i] if i2w_target[num] != "_PAD"])
             print("")
-            
-            
-© 2020 GitHub, Inc.
-Terms
-Privacy
-Security
-Status
-Help
-Contact GitHub
-Pricing
-API
-Training
-Blog
-About
