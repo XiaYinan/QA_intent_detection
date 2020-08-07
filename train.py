@@ -2,7 +2,7 @@ import tensorflow as tf
 import numpy as np
 import random
 import time
-from model import Seq2seq
+from model_ner import Seq2seq
 import os
 # from model_seq2seq import Seq2seq
 
@@ -20,6 +20,35 @@ class Config(object):
     target_vocab_size = None
     source_max_len = 10
     target_max_len = 10
+
+
+def load_data_new(data_num):
+    docs_source = []
+    docs_target = []
+    with open('resource/source.txt', 'r') as fs, open('resource/target.txt', 'r') as ft:
+        try:
+            while True:
+                docs_source.append([x.replace('\n', '') for x in next(fs).split(' ')])
+                docs_target.append([x.replace('\n', '') for x in next(ft).split(' ')])
+        except Exception:
+            pass
+    return docs_source, docs_target    
+
+
+
+
+def gen_vocab_files(src_file, tgt_file, src_table_file, tgt_table_file):
+    for file_, table_file_ in [(src_file, src_table_file), (tgt_file, tgt_table_file)]:
+        source_table_set = set()
+        with open(file_,'r') as f:
+            for line in f:
+                source_table_set.update(line.split(' '))
+        source_table_set = [x.replace('\n', '') for x in source_table_set]
+        with open(table_file_,'w') as f:
+            for x in source_table_set:
+                if len(x) > 0:
+                    f.write(x+'\n')
+
 
 
 def load_data(data_num):
@@ -51,19 +80,6 @@ def make_vocab(docs):
     return w2i, i2w
     
     
-def doc_to_seq(docs):
-    w2i = {"_PAD":0, "_GO":1, "_EOS":2}
-    i2w = {0:"_PAD", 1:"_GO", 2:"_EOS"}
-    seqs = []
-    for doc in docs:
-        seq = []
-        for w in doc:
-            if w not in w2i:
-                i2w[len(w2i)] = w
-                w2i[w] = len(w2i)
-            seq.append(w2i[w])
-        seqs.append(seq)
-    return seqs, w2i, i2w
 
 
 def get_batch(docs_source, w2i_source, docs_target, w2i_target, batch_size):
@@ -92,7 +108,8 @@ def get_batch(docs_source, w2i_source, docs_target, w2i_target, batch_size):
 if __name__ == "__main__":
 
     print("(1)load data......")
-    docs_source, docs_target = load_data(10000)
+    # docs_source, docs_target = load_data(10000)
+    docs_source, docs_target = load_data_new(10000)
     w2i_source, i2w_source = make_vocab(docs_source)
     w2i_target, i2w_target = make_vocab(docs_target)
     
