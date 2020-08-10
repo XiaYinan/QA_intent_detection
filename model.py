@@ -3,12 +3,39 @@ import tensorflow as tf
 class Seq2seq(object):
     
     def build_inputs(self, config):
-        self.seq_inputs = tf.placeholder(shape=(None, None), dtype=tf.int32, name='seq_inputs')
+        self.seq_inputs = tf.placeholder(shape=(None, config.source_max_len), dtype=tf.int32, name='seq_inputs')
         self.seq_inputs_length = tf.placeholder(shape=(None,), dtype=tf.int32, name='seq_inputs_length')
-        self.seq_targets = tf.placeholder(shape=(None, None), dtype=tf.int32, name='seq_targets')
+        self.seq_targets = tf.placeholder(shape=(None, config.source_max_len), dtype=tf.int32, name='seq_targets')
         self.seq_targets_length = tf.placeholder(shape=(None,), dtype=tf.int32, name='seq_targets_length')
+        self.seq_intent_targets = tf.placeholder(shape=(None,), dtype=tf.int32, name='seq_targets')
     
-    
+    def init_decoder(self, config):
+        with tf.name_scope('decoder'):
+
+            cell_fw = tf.nn.rnn_cell.GRUCell(config.hidden_dim, name='decoder/forward', activation=tf.nn.tanh)
+            cell_fw = tf.nn.rnn_cell.DropoutWrapper(cell_fw, input_keep_prob=0.9, output_keep_prob=0.9)
+            decoder_outputs, _ = tf.nn.dynamic_rnn(cell=cell_fw, inputs=self.encoder_outputs, dtype=tf.float32, sequence_length=self.seq_inputs_length)
+            decoder_concat = tf.concat([decoder_outputs, self.encoder_outputs], axis=2)
+            self.decoder = tf.layers.dense(
+                decoder_concat, config.target_vocab_size
+            )
+            self.decoder_softmax = tf.nn.softmax(self.decoder, axis=2)
+            self.out = tf.arg_max(self.decoder_softmax, 2)
+
+            labels = tf.reshape(
+                tf.contrib.layers.one_hot_encoding(
+                    tf.reshape(self.seq_targets, [-1]), num_classes=config.target_vocab_size),
+                shape=[-1, config.source_max_len, config.target_vocab_size])
+            cross_entropy = -tf.reduce_sum(labels * tf.log(self.decoder_softmax), axis=2)
+
+            sequence_mask = tf.sign(tf.reduce_max(tf.abs(labels), axis=2))
+
+            # sequence_mask = tf.sequence_mask(self.seq_targets_length, dtype=tf.float32)
+            cross_entropy_masked = tf.reduce_sum(
+                cross_entropy*sequence_mask, axis=1) / tf.cast(self.seq_targets_length, tf.float32)
+            self.ner_loss = tf.reduce_mean(cross_entropy_masked)
+
+
     def __init__(self, config, w2i_target, useTeacherForcing=True, useAttention=True, useBeamSearch=1):
 
         self.build_inputs(config)
@@ -27,71 +54,39 @@ class Seq2seq(object):
                 time_major=False
             )
             # encoder_state = tf.concat([encoder_fw_final_state, encoder_bw_final_state], axis=-1)
-            # encoder_outputs = tf.concat([encoder_fw_outputs, encoder_bw_outputs], axis=-1)
+            # self.encoder_outputs = tf.concat([encoder_fw_outputs, encoder_bw_outputs], axis=-1)
             encoder_state = tf.add(encoder_fw_final_state, encoder_bw_final_state)
-            encoder_outputs = tf.add(encoder_fw_outputs, encoder_bw_outputs)
+            self.encoder_outputs = tf.add(encoder_fw_outputs, encoder_bw_outputs)
 
-        with tf.variable_scope("decoder"):
-            
-            decoder_embedding = tf.Variable(tf.random_uniform([config.target_vocab_size, config.embedding_dim]), dtype=tf.float32, name='decoder_embedding')
-            
-            batch_size = tf.shape(encoder_inputs_embedded)[0]
-            tokens_go = tf.ones([batch_size], dtype=tf.int32, name='tokens_GO') * w2i_target["_GO"]
-            
-            if useTeacherForcing:
-                decoder_inputs = tf.concat([tf.reshape(tokens_go,[-1,1]), self.seq_targets[:,:-1]], 1)
-                helper = tf.contrib.seq2seq.TrainingHelper(tf.nn.embedding_lookup(decoder_embedding, decoder_inputs), self.seq_targets_length)
-            else:
-                helper = tf.contrib.seq2seq.GreedyEmbeddingHelper(decoder_embedding, tokens_go, w2i_target["_EOS"])
-                
-            with tf.variable_scope("gru_cell"):
-                decoder_cell = tf.nn.rnn_cell.GRUCell(config.hidden_dim)
+        with tf.variable_scope("intent"):
+            hidden_size = int(self.encoder_outputs.shape[-1])
+            self.outputs = tf.reshape(self.encoder_outputs, [-1, hidden_size], name='outputs')
+            self.softmax_w = tf.get_variable('softmax_w', [hidden_size, config.intent_target_vocab_size])
+            self.softmax_b = tf.get_variable('softmax_b', [config.intent_target_vocab_size])
+            self.seq_intent_logits = tf.reshape(
+                tf.matmul(self.outputs, self.softmax_w) + self.softmax_b,
+                shape=[-1, config.source_max_len, config.intent_target_vocab_size], name='intent_logits')
 
-                if useAttention:
-                    if useBeamSearch > 1:
-                        tiled_encoder_outputs = tf.contrib.seq2seq.tile_batch(encoder_outputs, multiplier=useBeamSearch)
-                        tiled_sequence_length = tf.contrib.seq2seq.tile_batch(self.seq_inputs_length, multiplier=useBeamSearch)
-                        attention_mechanism = tf.contrib.seq2seq.BahdanauAttention(num_units=config.hidden_dim, memory=tiled_encoder_outputs, memory_sequence_length=tiled_sequence_length)
-                        decoder_cell = tf.contrib.seq2seq.AttentionWrapper(decoder_cell, attention_mechanism)
-                        tiled_encoder_final_state = tf.contrib.seq2seq.tile_batch(encoder_state, multiplier=useBeamSearch)
-                        batch_size = tf.shape(encoder_inputs_embedded)[0]
-                        tiled_decoder_initial_state = decoder_cell.zero_state(batch_size=batch_size*useBeamSearch, dtype=tf.float32)
-                        tiled_decoder_initial_state = tiled_decoder_initial_state.clone(cell_state=tiled_encoder_final_state)
-                        decoder_initial_state = tiled_decoder_initial_state
-                    else:
-                        attention_mechanism = tf.contrib.seq2seq.BahdanauAttention(num_units=config.hidden_dim, memory=encoder_outputs, memory_sequence_length=self.seq_inputs_length)
-                        # attention_mechanism = tf.contrib.seq2seq.LuongAttention(num_units=config.hidden_dim, memory=encoder_outputs, memory_sequence_length=self.seq_inputs_length)
-                        decoder_cell = tf.contrib.seq2seq.AttentionWrapper(decoder_cell, attention_mechanism)
-                        batch_size = tf.shape(encoder_inputs_embedded)[0]
-                        decoder_initial_state = decoder_cell.zero_state(batch_size=batch_size, dtype=tf.float32)
-                        decoder_initial_state = decoder_initial_state.clone(cell_state=encoder_state)
-                else:
-                    if useBeamSearch > 1:
-                        decoder_initial_state = tf.contrib.seq2seq.tile_batch(encoder_state, multiplier=useBeamSearch)
-                    else:
-                        decoder_initial_state = encoder_state
-            
-            if useBeamSearch > 1:
-                decoder = tf.contrib.seq2seq.BeamSearchDecoder(decoder_cell, decoder_embedding, tokens_go, w2i_target["_EOS"],  decoder_initial_state, beam_width=useBeamSearch, output_layer=tf.layers.Dense(config.target_vocab_size))
-            else:
-                decoder = tf.contrib.seq2seq.BasicDecoder(decoder_cell, helper, decoder_initial_state, output_layer=tf.layers.Dense(config.target_vocab_size))
-            
-            decoder_outputs, decoder_state, final_sequence_lengths = tf.contrib.seq2seq.dynamic_decode(decoder, maximum_iterations=tf.reduce_max(self.seq_targets_length))
-            
-        if useBeamSearch > 1:
-            self.out = decoder_outputs.predicted_ids[:,:,0]
-        else:    
-            decoder_logits = decoder_outputs.rnn_output
-            self.out = tf.argmax(decoder_logits, 2)
 
-            self.log_likelihood, self.transition_params = tf.contrib.crf.crf_log_likelihood(
-                decoder_logits, self.seq_targets, self.seq_targets_length)
-            self.loss = tf.reduce_mean(-self.log_likelihood)
-            self.train_op = tf.train.AdamOptimizer(learning_rate=config.learning_rate).minimize(self.loss)
+            intent_targets = tf.tile(tf.expand_dims(self.seq_intent_targets, -1), [1, config.source_max_len])
+            
+            # intent_logits = tf.layers.dense(self.encoder_outputs, units=config.intent_target_vocab_size)
 
+
+            labels = tf.reshape(
+                tf.contrib.layers.one_hot_encoding(
+                    tf.reshape(intent_targets, [-1]), num_classes=config.intent_target_vocab_size),
+                shape=[-1, config.source_max_len, config.intent_target_vocab_size])
+            intent_logits = tf.nn.softmax(self.seq_intent_logits, dim=-1)
+            cross_entropy = -tf.reduce_sum(labels * tf.log(intent_logits), axis=2)
+            sequence_mask = tf.sign(tf.reduce_max(tf.abs(labels), axis=2))
             # sequence_mask = tf.sequence_mask(self.seq_targets_length, dtype=tf.float32)
-            # self.loss = tf.contrib.seq2seq.sequence_loss(logits=decoder_logits, targets=self.seq_targets, weights=sequence_mask)        
-            # self.train_op = tf.train.AdamOptimizer(learning_rate=config.learning_rate).minimize(self.loss)
+            cross_entropy_masked = tf.reduce_sum(
+                cross_entropy*sequence_mask, axis=1) / tf.cast(self.seq_targets_length, tf.float32)
+            self.intent_loss = tf.reduce_mean(cross_entropy_masked)
+        self.init_decoder(config)
+        self.loss = self.ner_loss + self.intent_loss   
+        self.train_op = tf.train.AdamOptimizer(learning_rate=config.learning_rate).minimize(self.loss)
 
 if __name__ == "__main__":
     
@@ -104,6 +99,8 @@ if __name__ == "__main__":
         "target_vocab_size": 3,
         "target_max_len": 6,
         "batch_size": 10,
+        "intent_nums": 9,
+        "intent_target_vocab_size": 3
     })
 
     w2i_target = {

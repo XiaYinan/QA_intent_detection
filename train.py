@@ -2,7 +2,7 @@ import tensorflow as tf
 import numpy as np
 import random
 import time
-from model_ner import Seq2seq
+from model import Seq2seq
 import os
 # from model_seq2seq import Seq2seq
 
@@ -18,21 +18,23 @@ class Config(object):
     learning_rate = 0.005
     source_vocab_size = None
     target_vocab_size = None
-    source_max_len = 10
-    target_max_len = 10
+    source_max_len = 40
+    target_max_len = 40
 
 
 def load_data_new(data_num):
     docs_source = []
     docs_target = []
-    with open('resource/source.txt', 'r') as fs, open('resource/target.txt', 'r') as ft:
+    docs_intent_target = []
+    with open('resource/source.txt', 'r') as fs, open('resource/target.txt', 'r') as ft, open('resource/intent_target.txt', 'r') as fit:
         try:
             while True:
                 docs_source.append([x.replace('\n', '') for x in next(fs).split(' ')])
                 docs_target.append([x.replace('\n', '') for x in next(ft).split(' ')])
+                docs_intent_target.append([x.replace('\n', '') for x in next(fit).split(' ')])
         except Exception:
             pass
-    return docs_source, docs_target    
+    return docs_source, docs_target, docs_intent_target
 
 
 
@@ -69,9 +71,13 @@ def load_data(data_num):
     return docs_source, docs_target
 
     
-def make_vocab(docs):
-    w2i = {"_PAD":0, "_GO":1, "_EOS":2}
-    i2w = {0:"_PAD", 1:"_GO", 2:"_EOS"}
+def make_vocab(docs, with_init=True):
+    if with_init:
+        w2i = {"_PAD":0, "_GO":1, "_EOS":2}
+        i2w = {0:"_PAD", 1:"_GO", 2:"_EOS"}
+    else:
+        w2i = dict()
+        i2w = dict()
     for doc in docs:
         for w in doc:
             if w not in w2i:
@@ -82,41 +88,45 @@ def make_vocab(docs):
     
 
 
-def get_batch(docs_source, w2i_source, docs_target, w2i_target, batch_size):
+def get_batch(docs_source, w2i_source, docs_target, w2i_target, docs_intent_target, w2i_intent_target, batch_size):
     ps = []
     while len(ps) < batch_size:
         ps.append(random.randint(0, len(docs_source)-1))
     
     source_batch = []
     target_batch = []
-    
+    intent_target_batch = []
+
     source_lens = [len(docs_source[p]) for p in ps]
     target_lens = [len(docs_target[p])+1 for p in ps]
     
-    max_source_len = max(source_lens)
-    max_target_len = max(target_lens)  
+    max_source_len = 40
+    max_target_len = 40
         
     for p in ps:
         source_seq = [w2i_source[w] for w in docs_source[p]] + [w2i_source["_PAD"]]*(max_source_len-len(docs_source[p]))
         target_seq = [w2i_target[w] for w in docs_target[p]] + [w2i_target["_EOS"]] + [w2i_target["_PAD"]]*(max_target_len-1-len(docs_target[p]))
         source_batch.append(source_seq)
         target_batch.append(target_seq)
+        intent_target_batch.append(w2i_intent_target[docs_intent_target[p][0]])
     
-    return source_batch, source_lens, target_batch, target_lens
+    return source_batch, source_lens, target_batch, target_lens, intent_target_batch
     
     
 if __name__ == "__main__":
 
     print("(1)load data......")
     # docs_source, docs_target = load_data(10000)
-    docs_source, docs_target = load_data_new(10000)
+    docs_source, docs_target, docs_intent_target = load_data_new(10000)
     w2i_source, i2w_source = make_vocab(docs_source)
     w2i_target, i2w_target = make_vocab(docs_target)
+    w2i_intent_target, i2w_intent_target = make_vocab(docs_intent_target, with_init=False)
     
     print("(2) build model......")
     config = Config()
     config.source_vocab_size = len(w2i_source)
     config.target_vocab_size = len(w2i_target)
+    config.intent_target_vocab_size = len(w2i_intent_target)
     model = Seq2seq(config=config, w2i_target=w2i_target, useTeacherForcing=True, useAttention=True, useBeamSearch=1)
     
     
@@ -132,16 +142,22 @@ if __name__ == "__main__":
         losses = []
         total_loss = 0
         for batch in range(batches):
-            source_batch, source_lens, target_batch, target_lens = get_batch(docs_source, w2i_source, docs_target, w2i_target, config.batch_size)
-            
+            source_batch, source_lens, target_batch, target_lens, intent_targets_batch = get_batch(docs_source, w2i_source, docs_target, w2i_target, docs_intent_target, w2i_intent_target, config.batch_size)
+            source_batch = np.array(source_batch)
+            source_lens = np.array(source_lens)
+            target_batch = np.array(target_batch)
+            target_lens = np.array(target_lens)
+            intent_targets_batch = np.array(intent_targets_batch)            
+
             feed_dict = {
                 model.seq_inputs: source_batch,
                 model.seq_inputs_length: source_lens,
                 model.seq_targets: target_batch,
-                model.seq_targets_length: target_lens
+                model.seq_targets_length: target_lens,
+                model.seq_intent_targets: intent_targets_batch
             }
             
-            loss, _ = sess.run([model.loss, model.train_op], feed_dict)
+            loss, _ = sess.run(fetches=[model.loss, model.train_op], feed_dict=feed_dict)
             total_loss += loss
             
             if batch % print_every == 0 and batch > 0:
